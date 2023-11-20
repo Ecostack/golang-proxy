@@ -2,10 +2,10 @@ package main
 
 import (
 	"http-proxy/config"
-	"http-proxy/parent_proxy"
+	"http-proxy/proxy"
 )
 
 func main() {
 	config.InitConfig()
-	parent_proxy.SetupProxy()
+	proxy.SetupProxy()
 }

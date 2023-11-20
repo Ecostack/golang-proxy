@@ -4,10 +4,14 @@ import (
 	"github.com/joho/godotenv"
 	"log"
 	"os"
+	"strings"
 )
 
 var Port = "3128"
-var ParentProxy = ""
+var ParentProxy = make([]string, 0)
+var RetryOnError = false
+
+var MaxRetryCount uint = 5
 
 func InitConfig() {
 	err := godotenv.Load()
@@ -22,10 +26,21 @@ func InitConfig() {
 
 	parentProxy := os.Getenv("PARENT_PROXY")
 	if parentProxy != "" {
-		ParentProxy = parentProxy
+		ParentProxy = strings.Split(parentProxy, ",")
 	}
 
-	if ParentProxy == "" {
+	if len(ParentProxy) == 0 {
 		log.Fatal("PARENT_PROXY not set")
 	}
+
+	retryOnError := os.Getenv("RETRY_ON_ERROR")
+	if strings.ToUpper(retryOnError) == "TRUE" {
+		RetryOnError = true
+	}
+
+	log.Println("Config loaded")
+	log.Println("Port:", Port)
+	log.Println("ParentProxy: ", ParentProxy)
+	log.Println("RetryOnError: ", RetryOnError)
+	log.Println("MaxRetryCount: ", MaxRetryCount)
 }
