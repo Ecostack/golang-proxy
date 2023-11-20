@@ -1,0 +1,5 @@
+.idea
+.env
+
+http-proxy
+deploy.sh
