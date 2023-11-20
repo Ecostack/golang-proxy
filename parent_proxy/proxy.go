@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync"
 )
 
 func SetupProxy() {
@@ -38,7 +39,7 @@ func handleConnection(clientConn net.Conn) {
 		log.Printf("Failed to read request: %v", err)
 		return
 	}
-	log.Println(req.URL, req.Method)
+	log.Println(req.Proto, req.Method, req.URL)
 
 	if req.Method == http.MethodConnect {
 		handleHTTPS(clientConn, req)
@@ -59,29 +60,37 @@ func handleHTTP(clientConn net.Conn, req *http.Request) {
 	// Forward the request to the destination
 	resp, err := transport.RoundTrip(req)
 	if err != nil {
-		log.Printf("Failed to forward request: %v", err)
+		log.Printf("[handleHTTP] Failed to forward request: %v", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	// Reading the status code
-	statusCode := resp.StatusCode
-	log.Printf("Received status code: %d", statusCode)
+	//statusCode := resp.StatusCode
+	//log.Printf("Received status code: %d", statusCode)
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[handleHTTP] Received non-OK status from server: %s", resp.Status)
+		// Handle non-OK status appropriately
+		return
+	}
 
 	// Write the response back to the client
-	resp.Write(clientConn)
+	err = resp.Write(clientConn)
+	if err != nil {
+		log.Printf("[handleHTTP] Failed to write response from parent proxy to client conn: %v", err)
+		return
+	}
 }
 
 func handleHTTPS(clientConn net.Conn, req *http.Request) {
-	log.Println("Handling HTTPS request for:", req.URL.Host)
-
 	// Connect to the parent proxy
 	proxyConn, err := net.Dial("tcp", config.ParentProxy)
 	if err != nil {
 		log.Printf("Failed to connect to parent proxy: %v", err)
 		return
 	}
-	log.Println("CONNECT to parent proxy successful")
+
+	defer proxyConn.Close()
 
 	// Send CONNECT request to the parent proxy
 	connectReq := &http.Request{
@@ -90,50 +99,55 @@ func handleHTTPS(clientConn net.Conn, req *http.Request) {
 		Host:   req.URL.Host,
 		Header: make(http.Header),
 	}
+
 	err = connectReq.Write(proxyConn)
 	if err != nil {
-		log.Printf("Failed to write CONNECT request to parent proxy: %v", err)
+		log.Printf("[handleHTTPS] Failed to write CONNECT request to parent proxy: %v", err)
+		return
 	}
 
-	// Tunneling data between client and parent proxy
-	clientDone := make(chan struct{})
-	proxyDone := make(chan struct{})
+	// Read the response from the destination server or parent proxy
+	resp, err := http.ReadResponse(bufio.NewReader(proxyConn), connectReq)
+	if err != nil {
+		log.Printf("[handleHTTPS] Failed to read response: %v", err)
+		return
+	}
 
+	// Check the response status code
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("[handleHTTPS] Received non-OK status from server: %s", resp.Status)
+		// Handle non-OK status appropriately
+		return
+	}
+
+	// If response is OK, start tunneling the traffic
+	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
 	go func() {
-		defer close(clientDone)
-
-		if _, err := io.Copy(proxyConn, clientConn); err != nil {
-			log.Printf("Error copying from client to parent proxy: %v", err)
+		defer wg.Done()
+		defer proxyConn.Close()
+		_, err = io.Copy(clientConn, proxyConn)
+		if err != nil {
+			log.Printf("[handleHTTPS] Failed to COPY proxyConn to clientConn request to parent proxy: %v", err)
+			return
 		}
 	}()
 
+	wg.Add(1)
 	go func() {
-		defer close(proxyDone)
-		if _, err := io.Copy(clientConn, proxyConn); err != nil {
-			log.Printf("Error copying from parent proxy to client: %v", err)
+		defer wg.Done()
+		defer clientConn.Close()
+		_, err = io.Copy(proxyConn, clientConn)
+		if err != nil {
+			log.Printf("[handleHTTPS] Failed to COPY clientConn to proxyConn request to parent proxy: %v", err)
+			return
 		}
 	}()
-	//
-	//br := bufio.NewReader(proxyConn)
-	//resp, err := http.ReadResponse(br, connectReq)
-	//if err != nil {
-	//	log.Printf("Failed to read response from parent proxy: %v", err)
-	//	return
-	//}
-	//
-	//// Reading the status code
-	//statusCode := resp.StatusCode
-	//log.Printf("Received status code from parent proxy: %d", statusCode)
 
-	// Wait for both copy operations to finish
-	select {
-	case <-clientDone:
-		proxyConn.Close()
-		<-proxyDone
-	case <-proxyDone:
-		clientConn.Close()
-		<-clientDone
-	}
+	wg.Wait()
 }
 
 //
