@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"errors"
 	"http-proxy/config"
 	"http-proxy/util"
 	"io"
@@ -19,13 +20,18 @@ func SetupProxy() {
 	if err != nil {
 		log.Fatalf("Failed to set up listener: %v", err)
 	}
-	defer listener.Close()
+	defer func(listener net.Listener) {
+		err := listener.Close()
+		if err != nil {
+			log.Println("[SetupProxy] Error closing listener:", err)
+		}
+	}(listener)
 
-	log.Println("Proxy server listening on port " + config.Port)
+	log.Println("[SetupProxy] Proxy server listening on port " + config.Port)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("Failed to accept connection: %v", err)
+			log.Printf("[SetupProxy] Failed to accept connection: %v", err)
 			continue
 		}
 
@@ -34,7 +40,7 @@ func SetupProxy() {
 }
 
 func getProxy() string {
-	return strings.TrimSpace(util.PickRandomString(config.ParentProxy))
+	return strings.TrimSpace(util.SelectWeighted(config.ParentProxy, config.ParentProxyWeight))
 }
 
 func handleConnection(clientConn net.Conn) {
@@ -88,7 +94,12 @@ func handleHTTP(clientConn net.Conn, req *http.Request) {
 		log.Printf("[handleHTTP] Failed to handle HTTP request: %v", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Println("[handleHTTP] Error closing body:", err)
+		}
+	}(resp.Body)
 
 	// Write the response back to the client
 	err = resp.Write(clientConn)
@@ -120,7 +131,10 @@ func establishTunnel(clientConn net.Conn, req *http.Request, tryCounter uint) (n
 	err = connectReq.Write(proxyConn)
 	if err != nil {
 		log.Printf("[handleHTTPS] Failed to write CONNECT request to parent proxy: %v", err)
-		proxyConn.Close()
+		err := proxyConn.Close()
+		if err != nil {
+			log.Println("[handleHTTPS] Error closing proxyConn:", err)
+		}
 		return nil, err
 	}
 
@@ -128,13 +142,17 @@ func establishTunnel(clientConn net.Conn, req *http.Request, tryCounter uint) (n
 	resp, err := http.ReadResponse(bufio.NewReader(proxyConn), connectReq)
 	if err != nil {
 		log.Printf("[handleHTTPS] Failed to read response: %v", err)
-		proxyConn.Close()
+		err := proxyConn.Close()
+		if err != nil {
+			log.Println("[handleHTTPS] Error closing proxyConn:", err)
+		}
 		return nil, err
 	}
 
 	// Check the response status code
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[handleHTTPS] Received non-OK status from server: %s", resp.Status)
+		err := errors.New("[handleHTTPS] non-OK status from server: " + resp.Status)
+		log.Println(err)
 
 		if config.RetryOnError {
 			if tryCounter < config.MaxRetryCount {
@@ -142,10 +160,15 @@ func establishTunnel(clientConn net.Conn, req *http.Request, tryCounter uint) (n
 				proxyConn.Close()
 				log.Println("[handleHTTPS] Retrying to establish tunnel " + strconv.Itoa(int(tryCounter)))
 				return establishTunnel(clientConn, req, tryCounter)
+			} else {
+				log.Println("[handleHTTPS] Max retry count reached")
 			}
 		}
 		// Handle non-OK status appropriately
-		proxyConn.Close()
+		err2 := proxyConn.Close()
+		if err2 != nil {
+			log.Println("[handleHTTPS] Error closing proxyConn:", err2)
+		}
 		return nil, err
 	}
 
