@@ -44,7 +44,12 @@ func getProxy() string {
 }
 
 func handleConnection(clientConn net.Conn) {
-	defer clientConn.Close()
+	defer func(clientConn net.Conn) {
+		err := clientConn.Close()
+		if err != nil {
+			log.Println("[handleConnection] Error closing clientConn:", err)
+		}
+	}(clientConn)
 
 	reader := bufio.NewReader(clientConn)
 	req, err := http.ReadRequest(reader)
@@ -157,7 +162,10 @@ func establishTunnel(clientConn net.Conn, req *http.Request, tryCounter uint) (n
 		if config.RetryOnError {
 			if tryCounter < config.MaxRetryCount {
 				tryCounter++
-				proxyConn.Close()
+				err := proxyConn.Close()
+				if err != nil {
+					log.Println("[handleHTTPS] Error closing proxyConn:", err)
+				}
 				log.Println("[handleHTTPS] Retrying to establish tunnel " + strconv.Itoa(int(tryCounter)))
 				return establishTunnel(clientConn, req, tryCounter)
 			} else {
@@ -183,17 +191,31 @@ func handleHTTPS(clientConn net.Conn, req *http.Request) {
 		log.Printf("[handleHTTPS] Failed to establish tunnel: %v", err)
 		return
 	}
-	defer proxyConn.Close()
+	defer func(proxyConn net.Conn) {
+		err := proxyConn.Close()
+		if err != nil {
+			log.Println("[handleHTTPS] Error closing proxyConn:", err)
+		}
+	}(proxyConn)
 
 	// If response is OK, start tunneling the traffic
-	clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	_, err = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	if err != nil {
+		log.Printf("[handleHTTPS] Failed to write response to clientConn: %v", err)
+		return
+	}
 
 	var wg sync.WaitGroup
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer proxyConn.Close()
+		defer func(proxyConn net.Conn) {
+			err := proxyConn.Close()
+			if err != nil {
+				log.Println("[handleHTTPS] Error closing proxyConn:", err)
+			}
+		}(proxyConn)
 		_, err = io.Copy(clientConn, proxyConn)
 		if err != nil {
 			log.Printf("[handleHTTPS] Failed to COPY proxyConn to clientConn request to parent proxy: %v", err)
@@ -204,7 +226,12 @@ func handleHTTPS(clientConn net.Conn, req *http.Request) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		defer clientConn.Close()
+		defer func(clientConn net.Conn) {
+			err := clientConn.Close()
+			if err != nil {
+				log.Println("[handleHTTPS] Error closing clientConn:", err)
+			}
+		}(clientConn)
 		_, err = io.Copy(proxyConn, clientConn)
 		if err != nil {
 			log.Printf("[handleHTTPS] Failed to COPY clientConn to proxyConn request to parent proxy: %v", err)
