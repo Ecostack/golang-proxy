@@ -14,6 +14,7 @@ var ParentProxyWeight = make([]int, 0)
 var RetryOnError = false
 
 var MaxRetryCount uint = 5
+var Production = false
 
 func InitConfig() {
 	err := godotenv.Load()
@@ -56,8 +57,15 @@ func InitConfig() {
 		RetryOnError = true
 	}
 
+	// Access environment variables
+	prod := os.Getenv("PRODUCTION")
+	if strings.ToUpper(prod) == "TRUE" {
+		Production = true
+	}
+
 	log.Println("Config loaded")
 	log.Println("Port:", Port)
+	log.Println("Production: ", Production)
 	log.Println("ParentProxy: ", ParentProxy)
 	log.Println("ParentProxyWeight: ", ParentProxyWeight)
 	log.Println("RetryOnError: ", RetryOnError)
