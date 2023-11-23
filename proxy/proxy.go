@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 )
 
 func SetupProxy(ctx context.Context) {
@@ -33,6 +34,12 @@ func SetupProxy(ctx context.Context) {
 		conn, err := listener.Accept()
 		if err != nil {
 			otel_service.Error(ctx, otel_service.Logger, "[SetupProxy] Failed to accept connection:", zap.Error(err))
+			continue
+		}
+
+		err = conn.SetDeadline(time.Now().Add(time.Second * time.Duration(config.ClientConnectionTimeoutSeconds)))
+		if err != nil {
+			otel_service.Error(ctx, otel_service.Logger, "[SetupProxy] Failed to set deadline:", zap.Error(err))
 			continue
 		}
 
@@ -124,23 +131,35 @@ func handleHTTP(ctx context.Context, clientConn net.Conn, req *http.Request) {
 	}
 }
 
-func establishTunnel(ctx context.Context, clientConn net.Conn, req *http.Request, tryCounter uint) (net.Conn, error) {
+func establishTunnelForHTTPS(ctx context.Context, clientConn net.Conn, req *http.Request, tryCounter uint) (net.Conn, error) {
+
+	requestTimeout := time.Second * time.Duration(config.RequestTimeoutSeconds)
+
+	connectionTimeout := time.Second * time.Duration(config.ConnectionTimeoutSeconds)
+
 	// Connect to the parent proxy
-	ctx, span := otel_service.Tracer.Start(ctx, "establishTunnel")
+	ctx, span := otel_service.Tracer.Start(ctx, "establishTunnelForHTTPS")
 	defer span.End()
 
 	proxy := getProxy()
-	otel_service.Info(ctx, otel_service.Logger, "[establishTunnel] Establishing tunnel with parent proxy", zap.String("proxy", proxy))
-	proxyConn, err := net.Dial("tcp", proxy)
+	otel_service.Info(ctx, otel_service.Logger, "[establishTunnelForHTTPS] Establishing tunnel with parent proxy", zap.String("proxy", proxy))
+	proxyConn, err := net.DialTimeout("tcp", proxy, requestTimeout)
 	if err != nil {
-		otel_service.Error(ctx, otel_service.Logger, "[establishTunnel] Failed to connect to parent proxy:", zap.Error(err))
+		otel_service.Error(ctx, otel_service.Logger, "[establishTunnelForHTTPS] Failed to connect to parent proxy:", zap.Error(err))
+		return nil, err
+	}
+
+	deadline := time.Now().Add(connectionTimeout)
+	err = proxyConn.SetDeadline(deadline)
+	if err != nil {
+		otel_service.Error(ctx, otel_service.Logger, "[establishTunnelForHTTPS] Failed to set deadline:", zap.Error(err))
 		return nil, err
 	}
 
 	closeProxyConn := func(ctx context.Context, proxyConn net.Conn) {
 		errClose := proxyConn.Close()
 		if errClose != nil {
-			otel_service.Error(ctx, otel_service.Logger, "[establishTunnel] Error closing proxyConn:", zap.Error(errClose))
+			otel_service.Error(ctx, otel_service.Logger, "[establishTunnelForHTTPS] Error closing proxyConn:", zap.Error(errClose))
 		}
 	}
 
@@ -154,7 +173,7 @@ func establishTunnel(ctx context.Context, clientConn net.Conn, req *http.Request
 
 	err = connectReq.Write(proxyConn)
 	if err != nil {
-		otel_service.Error(ctx, otel_service.Logger, "[establishTunnel] Failed to write CONNECT request to parent proxy", zap.Error(err))
+		otel_service.Error(ctx, otel_service.Logger, "[establishTunnelForHTTPS] Failed to write CONNECT request to parent proxy", zap.Error(err))
 		closeProxyConn(ctx, proxyConn)
 		return nil, err
 	}
@@ -162,7 +181,7 @@ func establishTunnel(ctx context.Context, clientConn net.Conn, req *http.Request
 	// Read the response from the destination server or parent proxy
 	resp, err := http.ReadResponse(bufio.NewReader(proxyConn), connectReq)
 	if err != nil {
-		otel_service.Error(ctx, otel_service.Logger, "[establishTunnel] Failed to read response", zap.Error(err))
+		otel_service.Error(ctx, otel_service.Logger, "[establishTunnelForHTTPS] Failed to read response", zap.Error(err))
 		closeProxyConn(ctx, proxyConn)
 		return nil, err
 	}
@@ -170,16 +189,16 @@ func establishTunnel(ctx context.Context, clientConn net.Conn, req *http.Request
 	// Check the response status code
 	if resp.StatusCode != http.StatusOK {
 		err := errors.New("non-OK status from server: " + resp.Status)
-		otel_service.Error(ctx, otel_service.Logger, "[establishTunnel] non-OK status from server ", zap.Error(err))
+		otel_service.Error(ctx, otel_service.Logger, "[establishTunnelForHTTPS] non-OK status from server ", zap.Error(err))
 
 		if config.RetryOnError {
 			if tryCounter < config.MaxRetryCount {
 				tryCounter++
 				closeProxyConn(ctx, proxyConn)
-				otel_service.Warn(ctx, otel_service.Logger, "[establishTunnel] Retrying to establish tunnel ", zap.Uint("tryCounter", tryCounter))
-				return establishTunnel(ctx, clientConn, req, tryCounter)
+				otel_service.Warn(ctx, otel_service.Logger, "[establishTunnelForHTTPS] Retrying to establish tunnel ", zap.Uint("tryCounter", tryCounter))
+				return establishTunnelForHTTPS(ctx, clientConn, req, tryCounter)
 			} else {
-				otel_service.Warn(ctx, otel_service.Logger, "[establishTunnel] Max retry count reached ")
+				otel_service.Warn(ctx, otel_service.Logger, "[establishTunnelForHTTPS] Max retry count reached ")
 			}
 		}
 		// Handle non-OK status appropriately
@@ -193,7 +212,7 @@ func handleHTTPS(ctx context.Context, clientConn net.Conn, req *http.Request) {
 	ctx, span := otel_service.Tracer.Start(ctx, "handleHTTPS")
 	defer span.End()
 	// Establish a tunnel with the parent proxy
-	proxyConn, err := establishTunnel(ctx, clientConn, req, 0)
+	proxyConn, err := establishTunnelForHTTPS(ctx, clientConn, req, 0)
 	if err != nil {
 		otel_service.Error(ctx, otel_service.Logger, "[handleHTTPS] Failed to establish tunnel", zap.Error(err))
 		return

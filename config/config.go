@@ -16,6 +16,10 @@ var RetryOnError = false
 var MaxRetryCount uint = 5
 var Production = false
 
+var RequestTimeoutSeconds uint = 5
+var ConnectionTimeoutSeconds uint = 60
+var ClientConnectionTimeoutSeconds = ConnectionTimeoutSeconds * (MaxRetryCount + 1)
+
 func InitConfig() {
 	err := godotenv.Load()
 	if err != nil {
@@ -68,6 +72,9 @@ func InitConfig() {
 	log.Println("Production: ", Production)
 	log.Println("ParentProxy: ", ParentProxy)
 	log.Println("ParentProxyWeight: ", ParentProxyWeight)
+	log.Println("RequestTimeoutSeconds: ", RequestTimeoutSeconds)
+	log.Println("ConnectionTimeoutSeconds: ", ConnectionTimeoutSeconds)
+	log.Println("ClientConnectionTimeoutSeconds: ", ClientConnectionTimeoutSeconds)
 	log.Println("RetryOnError: ", RetryOnError)
 	log.Println("MaxRetryCount: ", MaxRetryCount)
 }
