@@ -6,6 +6,7 @@ import (
 	"github.com/uptrace/uptrace-go/uptrace"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
+	"go.uber.org/zap"
 	"http-proxy/config"
 	"http-proxy/proxy_connection"
 	"log"
@@ -24,6 +25,7 @@ func initCounters() {
 	_, err := Meter.Int64ObservableGauge("http.proxy.connections.new",
 		metric.WithInt64Callback(func(ctx context.Context, observer metric.Int64Observer) error {
 			data, err := proxy_connection.MeasureEstablishedConnections()
+			Info(ctx, Logger, "http.proxy.connections.new:", zap.Int("connections", data))
 			if err != nil {
 				return err
 			}

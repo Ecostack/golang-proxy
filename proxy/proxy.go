@@ -218,16 +218,10 @@ func handleHTTPS(ctx context.Context, clientConn net.Conn, req *http.Request) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		//defer func(proxyConn net.Conn) {
-		//	err := proxyConn.Close()
-		//	if err != nil {
-		//		log.Println("[handleHTTPS] Error closing proxyConn:", err)
-		//	}
-		//}(proxyConn)
 		_, err = io.Copy(clientConn, proxyConn)
 		if err != nil {
 			otel_service.Error(ctx, otel_service.Logger, "[handleHTTPS] Failed to COPY proxyConn to clientConn request to parent proxy", zap.Error(err))
-			//log.Printf("[handleHTTPS] Failed to COPY proxyConn to clientConn request to parent proxy: %v", err)
+
 			return
 		}
 	}()
@@ -235,16 +229,9 @@ func handleHTTPS(ctx context.Context, clientConn net.Conn, req *http.Request) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		//defer func(clientConn net.Conn) {
-		//	err := clientConn.Close()
-		//	if err != nil {
-		//		log.Println("[handleHTTPS] Error closing clientConn:", err)
-		//	}
-		//}(clientConn)
 		_, err = io.Copy(proxyConn, clientConn)
 		if err != nil {
 			otel_service.Error(ctx, otel_service.Logger, "[handleHTTPS] Failed to COPY clientConn to proxyConn request to parent proxy", zap.Error(err))
-			//log.Printf("[handleHTTPS] Failed to COPY clientConn to proxyConn request to parent proxy: %v", err)
 			return
 		}
 	}()
